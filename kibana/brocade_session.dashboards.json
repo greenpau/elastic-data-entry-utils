@@ -1,0 +1,19 @@
+[
+  {
+    "_id": "Load-Balanced-Services",
+    "_type": "dashboard",
+    "_source": {
+      "title": "Services",
+      "hits": 0,
+      "description": "",
+      "panelsJSON": "[\n  {\n    \"col\": 1,\n    \"id\": \"New-Connections-Graph\",\n    \"panelIndex\": 1,\n    \"row\": 1,\n    \"size_x\": 5,\n    \"size_y\": 4,\n    \"type\": \"visualization\"\n  },\n  {\n    \"col\": 6,\n    \"id\": \"New-Connections-Sources\",\n    \"panelIndex\": 2,\n    \"row\": 1,\n    \"size_x\": 3,\n    \"size_y\": 6,\n    \"type\": \"visualization\"\n  },\n  {\n    \"col\": 9,\n    \"id\": \"New-Connections-Applications\",\n    \"panelIndex\": 3,\n    \"row\": 1,\n    \"size_x\": 4,\n    \"size_y\": 6,\n    \"type\": \"visualization\"\n  },\n  {\n    \"col\": 1,\n    \"id\": \"New-Connections-Destinations\",\n    \"panelIndex\": 4,\n    \"row\": 5,\n    \"size_x\": 5,\n    \"size_y\": 4,\n    \"type\": \"visualization\"\n  },\n  {\n    \"col\": 6,\n    \"id\": \"New-Connections-Devices\",\n    \"panelIndex\": 5,\n    \"row\": 7,\n    \"size_x\": 7,\n    \"size_y\": 2,\n    \"type\": \"visualization\"\n  },\n  {\n    \"id\": \"New-Connections-Average-TCP-Handshake-Time\",\n    \"type\": \"visualization\",\n    \"panelIndex\": 6,\n    \"size_x\": 12,\n    \"size_y\": 3,\n    \"col\": 1,\n    \"row\": 9\n  }\n]",
+      "optionsJSON": "{\n  \"darkTheme\": false\n}",
+      "uiStateJSON": "{\n  \"P-3\": {\n    \"spy\": {\n      \"mode\": {\n        \"fill\": false,\n        \"name\": null\n      }\n    }\n  }\n}",
+      "version": 1,
+      "timeRestore": false,
+      "kibanaSavedObjectMeta": {
+        "searchSourceJSON": "{\n  \"filter\": [\n    {\n      \"query\": {\n        \"query_string\": {\n          \"analyze_wildcard\": true,\n          \"query\": \"*\"\n        }\n      }\n    }\n  ]\n}"
+      }
+    }
+  }
+]

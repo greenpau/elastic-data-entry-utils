@@ -1,0 +1,25 @@
+{
+  "template": "syslog-*",
+  "order": 0,
+  "mappings" : {
+      "_default_": {
+          "dynamic_templates": [
+              { "text": { "match": "text", "mapping": { "type" : "string", "index" : "not_analyzed", "doc_values": true } } },
+              { "timestamp": { "match_pattern": "regex", "match": ".*timestamp", "mapping": { "type" : "date", "index" : "not_analyzed", "doc_values": true } } },
+              { "names": { "match_pattern": "regex", "match": "(host|short)name", "mapping": { "type" : "string", "index" : "not_analyzed", "doc_values": true } } },
+              { "message": { "match": "message", "mapping": { "type" : "string", "index" : "not_analyzed", "doc_values": true } } },
+              { "ack": { "match": "ack", "mapping": { "type" : "boolean", "index" : "not_analyzed", "doc_values": true } } },
+              { "ack_by": { "match": "ack_by", "mapping": { "type" : "string", "index" : "not_analyzed", "doc_values": true } } },
+              { "facility": { "match": "facility", "mapping": { "type" : "string", "index" : "not_analyzed", "doc_values": true } } },
+              { "severity": { "match": "severity", "mapping": { "type" : "integer", "index" : "not_analyzed", "doc_values": true } } },
+              { "class": { "match": "class", "mapping": { "type" : "string", "index" : "not_analyzed", "doc_values": true } } }
+          ],
+          "_all": {
+              "enabled": false
+          }
+      }
+  },
+  "settings": {
+      "number_of_shards": 1
+  }
+}

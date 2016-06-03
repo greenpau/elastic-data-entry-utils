@@ -1,0 +1,3 @@
+2012-05-04T22:13:38.934208-04:00 10.1.1.1 : 2012 May  4 22:13:38 EDT: %AUTHPRIV-3-SYSTEM_MSG: pam_aaa:Authentication failed for user NY\svc_account from 10.1.1.92 - sshd[9332]
+
+2012-05-04T22:13:44.438821-04:00 10.1.1.1 : 20222222 May  4 22:12:40.359: %CLEAR-5-COUNTERS: Clear counter on all interfaces by greenpau on vty0 (10.1.1.92)

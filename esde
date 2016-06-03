@@ -1,0 +1,1073 @@
+#!/usr/bin/env python
+
+#   This program is free software: you can redistribute it and/or modify
+#   it under the terms of the GNU General Public License as published by
+#   the Free Software Foundation, either version 3 of the License, or
+#   (at your option) any later version.
+#
+#   This program is distributed in the hope that it will be useful,
+#   but WITHOUT ANY WARRANTY; without even the implied warranty of
+#   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#   GNU General Public License for more details.
+#
+#   You should have received a copy of the GNU General Public License
+#   along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+__author__ = "Paul Greenberg @greenpau"
+__copyright__ = "Copyright 2016, Paul Greenberg"
+__license__ = "GPL"
+__version__ = "3.0"
+__maintainer__ = "Paul Greenberg"
+__email__ = "greenpau@users.noreply.github.com"
+__status__ = "Production"
+
+import os, stat, sys;
+import io;
+import re;
+import pprint;
+import hashlib;
+from collections import OrderedDict;
+from datetime import tzinfo, timedelta, datetime;
+import time;
+import json;
+import logging;
+import argparse;
+import glob;
+import functools;
+import ast;
+import traceback;
+import tempfile;
+import threading;
+from threading import Thread, Lock;
+try:
+    from Queue import Queue;
+except:
+    from queue import Queue;
+try:
+    from httplib import HTTPConnection;
+except:
+    from http.client import HTTPConnection;
+try:
+    import ipaddress;
+except:
+    logger.error('\'ipaddress\' module must be present, exiting ...');
+    os._exit(1);
+try:
+    from dateutil import parser;
+except:
+    logger.error('\'python-dateutil\' module must be present, exiting ...');
+    os._exit(1);
+
+logging.basicConfig(format='%(asctime)s - %(module)s - %(threadName)s - %(funcName)s - %(levelname)s - %(message)s');
+logger = logging.getLogger(__file__);
+logger.setLevel(logging.INFO);
+
+class add_files_from_path(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        fp = os.curdir + '/' + values;
+        if re.match('/', values):
+            fp = values;
+        for f in glob.glob(os.curdir + '/' + values):
+            if option_string in ['--index-schema']:
+                if namespace.index_schema is None:
+                    namespace.index_schema = [];
+                if f not in namespace.index_schema:
+                    namespace.index_schema.append(os.path.abspath(f));
+            if option_string in ['--data']:
+                if namespace.data is None:
+                    namespace.data = [];
+                if f not in namespace.data:
+                    namespace.data.append(os.path.abspath(f));
+
+class ElasticSearchBulkApi:
+
+    def __init__(self, text=None, error=False):
+        self.text = text;
+        self.error = None;
+
+    def call(self, items):
+        current_thread_name = threading.current_thread().name;
+        if not isinstance(items, list):
+            self.error = 'the call() function accepts only a list of dictionaries';
+            return None;
+        refs = {};
+        data = [];
+        retries = [];
+        count_index = 0;
+        count_update = 0;
+        count_retry = 0;
+        count_error = 0;
+        for entry in items:
+            if not isinstance(entry, dict):
+                self.error = 'the call() function accepts only a list of dictionaries, but not \'' + str(type(entry)) + '\': ' + str(entry);
+                return None;
+            for k in ['header', 'body', 'retries']:
+                if k not in entry:
+                    self.error = 'the entry passed to call() function must have \'' + k + '\' key: ' + str(entry);
+                    return None;
+            if len(entry['header']) != 1:
+                self.error = 'the entry passed to call() function must have a single subkey, e.g. index, update, etc., but not \'' + str(entry['header'].keys());
+                return None;
+            entry_action = None;
+            entry_map = None;
+            for action in entry['header']:
+                entry_action = action;
+                for k in ['_id', '_index', '_type']:
+                    if k not in entry['header'][action]:
+                        self.error = 'the entry passed to call() function must have a header with a valid \'' + k + '\' subkey: ' + str(entry);
+                        return None;
+                entry_id = entry['header'][action]['_id'];
+                refs[entry_id] = entry;
+            if '_types' in entry['header'][entry_action]:
+                entry_map = entry['header'][entry_action].pop('_types', None);
+            data.append(json.dumps(entry['header']));
+            if entry_map:
+                entry['header'][entry_action]['_types'] = entry_map;
+            data.append(_to_json(entry['body'], entry_map));
+        url = "/_bulk?pretty";
+        payload = '\n'.join(data) + '\n';
+        headers = OrderedDict({
+            "Host": str(args.host) + ':' + str(args.port),
+            "Content-Length": str(len(payload)),
+            "Content-Type": "application/octet-stream",
+            "Accept-Encoding": "gzip, deflate, compress",
+            "Accept": "*/*",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/50.0.2661.102 Safari/537.36",
+        });
+        json_data = None;
+        try:
+            conn = HTTPConnection(args.host, args.port);
+            conn.request("POST", url, payload, headers);
+            resp = conn.getresponse();
+            #logger.info("request: \n" + str(payload));
+            #logger.info("status: " + str(resp.status));
+            #logger.info("reason: " + str(resp.reason));
+            data = resp.read();
+            #logger.critical(data);
+            try:
+                if isinstance(data, bytes):
+                    json_data = json.loads(data.decode("utf-8"));
+                else:
+                    json_data = json.loads(data);
+                if 'errors' in json_data:
+                    if json_data['errors'] is True:
+                        self.error = 'detected the following errors:\n';
+
+                if 'items' in json_data:
+                    for item in json_data['items']:
+                        item_error = '';
+                        if 'index' in item:
+                            if 'status' in item['index']:
+                                if item['index']['status'] in [200, 201]:
+                                    count_index += 1;
+                                else:
+                                    count_error += 1;
+                                    item_error += str(item['index']['status']);
+                                    for f in ['_index', '_type', '_id']:
+                                        if f in item['index']:
+                                            item_error += ' ' + str(item['index'][f]);
+                                            if f == '_id':
+                                                if str(item['index'][f]) in refs:
+                                                    item_error += ' ' + str(refs[str(item['index'][f])]);
+                                                    retry_entry = refs[str(item['index'][f])];
+                                                    if 'retries' in retry_entry:
+                                                        if retry_entry['retries'] > 0:
+                                                            retry_entry['retries'] -= 1;
+                                                            count_retry += 1;
+                                                            count_error -= 1;
+                                                            retries.append(retry_entry);
+                                    if 'error' in item['index']:
+                                        for f in ['type', 'reason']:
+                                            if f in item['index']['error']:
+                                                item_error += ' ' + str(item['index']['error'][f]);
+                                        if 'caused_by' in item['index']['error']:
+                                            for f in ['type', 'reason']:
+                                                if f in item['index']['error']['caused_by']:
+                                                    item_error += ' ' + str(item['index']['error']['caused_by'][f]);
+                        if item_error != '':
+                            self.error += item_error + '\n';
+                totals = 'records ' + str(count_index) + '/' + str(count_update) +  '/' + str(count_retry) + '/' + str(count_error) + ' indexed/updated/retried/erred out of ' + str(len(items));
+                if count_error > 0:
+                    self.error += totals;
+                else:
+                    self.error = None;
+                    if count_retry > 0:
+                        self.text =  'erred and queued for retry, ' + totals;
+                    else:
+                        self.text = 'no errors, ' + totals;
+            except:
+                exc_type, exc_value, exc_traceback = sys.exc_info();
+                self.error = current_thread_name + ' ' + str(traceback.print_exception(exc_type, exc_value, exc_traceback));
+                #self.error = str(traceback.print_exception(exc_type, exc_value, exc_traceback)) + '\n' + str(data);
+        except:
+            exc_type, exc_value, exc_traceback = sys.exc_info();
+            self.error = current_thread_name + ' ' + str(exc_type) + ': ' + str(exc_value);
+            #logger.error(traceback.print_exception(exc_type, exc_value, exc_traceback));
+        if retries:
+            return retries;
+        return None;
+
+
+class tz(tzinfo):
+    def __init__(self, s, dst=False):
+        _negative = False;        
+        if s[0] in ['-', '+']:
+            if s[0] == '-':
+                _negative = True;
+        s = str(s).replace(':', '');
+        self.hour = int(str(s[1:3]));
+        self.minute = int(str(s[3:5])); 
+        if _negative:
+            self.sign = '-';
+            self.offset = timedelta(seconds = -(self.hour * 3600 + self.minute * 60));
+        else:
+            self.sign = '+';
+            self.offset = timedelta(seconds = (self.hour * 3600 + self.minute * 60));
+        self.dst = timedelta(0);
+        self.name = 'UTC' + self.sign + str(self.hour).zfill(2) + ':' + str(self.minute).zfill(2);
+    def utcoffset(self, dt):
+        return self.offset
+    def dst(self, dt):
+        return self.dst
+    def tzname(self, dt):
+        return self.name
+
+
+def _value_lookup(**kwargs):
+    if 'db' not in kwargs:
+        logger.error('\'db\' was not passed to this function');
+        return None;
+    datasource = kwargs['db'];
+    if datasource not in db:
+        return None;
+    if datasource in ['applications']:
+        return _get_app_name(**kwargs);
+    elif datasource in ['clients']:
+        return _get_client_name(**kwargs);
+    else:
+        return None;
+    return None;
+
+
+def _update_cache(store, key, value):
+    if store not in cache:
+        cache[store] = OrderedDict({});
+    if key not in cache[store]:
+        cache[store][key] = value;
+    return;
+
+
+def _get_ipaddr(s):
+    try:
+        if re.match('\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', s):
+            s += '/32';
+        if _python2:
+            return ipaddress.ip_network(unicode(s), strict=False);
+        else:
+            return ipaddress.ip_network(s, strict=False);
+    except:
+        exc_type, exc_value, exc_traceback = sys.exc_info();
+        logger.error(str(exc_type) + ' when converting string \'' + str(s) + '\' to ip_network object: ' + str(exc_value));
+        return None;
+
+def _port_in_range(port, ports):
+    for p in ports:
+        ind = re.match('(\d+)$', str(p));
+        rng = re.match('(\d+)-(\d+)$', str(p));
+        if not ind and not rng:
+            logger.error('the port range \'' + p + '\' is invalid');
+        if ind:
+            if int(port) == int(p):
+                return True;
+        if rng:
+            if int(rng.group(1)) <= int(port) and int(rng.group(2)) >= int(port):
+                return True;
+    return False;
+
+def _get_app_name(**kwargs):
+    name = None;
+    ipv4 = None;
+    port = None;
+    for i in ['dst_ip', 'ip', 'ipv4']:
+        if i in kwargs:
+            ipv4 = _get_ipaddr(str(kwargs[i]));
+            break;
+    for i in ['dst_port', 'port']:
+        if i in kwargs:
+            port = kwargs[i];
+            break;
+    if not ipv4:
+        return None;
+    cached = str(ipv4) + ':' + str(port);
+    if 'applications' in cache:
+        if cached in cache['applications']:
+            return cache['applications'][cached];
+    for app in db['applications']:
+        for endpoint in app['endpoints']:
+            _ipv4_match = False;
+            _port_match = False;
+            if 'ipv4' in endpoint and ipv4:
+                _endpoint_ips = [];
+                if isinstance(endpoint['ipv4'], str):
+                    _endpoint_ips.append(endpoint['ipv4']);
+                else:
+                    _endpoint_ips = list(endpoint['ipv4']);
+                for e in _endpoint_ips:
+                    eipv4 = _get_ipaddr(e);
+                    if not eipv4:
+                        continue;
+                    if ipv4.overlaps(eipv4):
+                        _ipv4_match = True;
+                        break;
+            else:
+                _ipv4_match = True;
+            if 'ports' in endpoint and port:
+                if _port_in_range(port, endpoint['ports']):
+                    _port_match = True;
+            else:
+                _port_match = True;
+            if _ipv4_match and _port_match:
+                _update_cache('applications', cached, app['name']); 
+                return app['name'];
+    return 'UNKNOWN';
+
+
+def _get_client_name(**kwargs):
+    name = None;
+    ipv4 = None;
+    for i in ['src_ip', 'ip', 'ipv4']:
+        if i in kwargs:
+            ipv4 = _get_ipaddr(str(kwargs[i]));
+            break;
+    if not ipv4:
+        return 'UNKNOWN';
+    cached = str(ipv4);
+    if 'clients' in cache:
+        if cached in cache['clients']:
+            return cache['clients'][cached];
+    cp = [];
+    _worker = True;
+    i = 0;
+    while _worker:
+        i += 1;
+        dd = None;
+        try:
+            dd = functools.reduce(dict.__getitem__, cp, db['clients']);
+        except:
+            _worker = False;
+        if isinstance(dd, dict):
+            _is_match = False;
+            for net in dd.keys():
+                if isinstance(net, str):
+                    continue;
+                if ipv4.overlaps(net):
+                    logger.debug('matched ' + str(ipv4) + ' to ' + str(net) + ' network');
+                    if isinstance(dd[net], dict):
+                        if 'name' in dd[net]:
+                            name = dd[net]['name'];
+                    cp.append(net);
+                    _is_match = True;
+                    break;
+            if not _is_match:
+                _worker = False;
+        else:
+            if isinstance(dd, str):
+                name = dd;
+            _worker = False;
+    if not name:
+        name = 'UNKNOWN';
+    else:
+        _update_cache('clients', cached, name);
+    return name;
+
+
+def _get_shortname(**kwargs):
+    identifiers = ['hostname'];
+    for i in identifiers:
+        if i in kwargs:
+            if i == 'hostname':
+                s = str(kwargs[i]).lower();
+                if len(s) > 64:
+                    return None;
+                if re.search('[^a-z0-9-]', s):
+                    return None;
+                if re.match('\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}', s):
+                    return None;
+                return s.split('.')[0];
+    return None;
+
+def _ints(s):
+    s = str(s).lstrip('0');
+    if s == '':
+        return 0;
+    return int(s);
+
+def _to_json(dd, ft=None):
+    if not ft:
+        ft = {};
+    r = [];
+    try:
+        for k in dd:
+            e = '"' + k + '": ';
+            quoted = True;
+            value = str(dd[k]);
+            if k in ft:
+                if ft[k] in ['float', 'double']:
+                    quoted = False;
+            if quoted:
+                if re.search('"', value):
+                    value = value.replace('"', '\\"');
+                if re.search(r'\\', value):
+                    value = re.sub(r'[\x5c]', r'\\\\', value);
+                value = '"' + value + '"';
+            e += value;
+            r.append(e);
+    except:
+        exc_type, exc_value, exc_traceback = sys.exc_info();
+        logger.error(traceback.print_exception(exc_type, exc_value, exc_traceback));
+        return 'ERROR';
+    return '{' +  ', '.join(r) + '}';
+
+
+def _remove_non_ascii(s):
+    r = [];
+    for c in s:
+        if (ord(c) > 31 and ord(c) < 127) or ord(c) in [10, 13]:
+            r.append(c);
+    return ''.join(r);
+
+
+def _parse_line(s):
+    if s == '':
+        return '_empty', None;
+    _match = False;
+    _schema = None;
+    m = None;
+    for r in schema:
+        m = re.match(r['regex'], s);
+        if m:
+            if '_skip' in r:
+                if r['_skip'] == True:
+                    return '_skip', None;
+            _schema = r;
+            _match = True;
+            break;
+    if not _match:
+        return 'failed, no match found', s;
+    entry_index = None;
+    entry_action = _schema['action'];
+    entry_type = _schema['_type'];
+    entry_id = None;
+    if _python2:
+        entry_id = hashlib.sha256(s).hexdigest();
+    else:
+        entry_id = hashlib.sha256(s.encode("utf-8")).hexdigest();
+    entry = OrderedDict({'text': s });
+    entry_map = OrderedDict({});
+    for i in _schema['_mappings']:
+        if i['_name'] == '_skip':
+            continue;
+        entry_map[i['_name']] = i['_type'];
+        if i['_type'] in ['integer', 'int', 'number']:
+            try:
+                num = str(m.group(i['_id']));
+                num = num.lstrip();
+                entry[i['_name']] = int(num);
+            except:
+                exc_type, exc_value, exc_traceback = sys.exc_info();
+                return 'failed to convert \'' + str(m.group(i['_id'])) + '\' to integer in field \'' + str(i['_name']) + '\' due to ' + str(exc_type) + ' ' + str(exc_value), s;
+        elif i['_type'] in ['float', 'double']:
+            flt = None;
+            if '_format' in i:
+                if i['_format'] == 'nanoseconds':
+                    if len(str(m.group(i['_id']))) > 9:
+                        flt = list(str(m.group(i['_id'])));
+                    else:
+                        flt = str(m.group(i['_id']));
+                        flt = list(flt.zfill(10));
+                    flt.insert(-9, '.');
+                    flt = ''.join(flt);
+            if not flt:
+                return 'failed to parse float: \'' + str(m.group(i['_id'])) + '\'', s;
+            entry[i['_name']] = flt;
+        elif i['_type'] in ['date']:
+            dt = None;
+            tzinfos = {"EST": -14400, "EDT": -14400, "CST": -18000, "CDT": -18000,
+                       "MST": -21600, "MDT": -21600, "PST": -25200, "PDT": -25200};
+            if '_format' in i:
+                if i['_format'] == 'basic_date_time':
+                    tm = re.match('(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})\.(\d{3,9})(-\d{2}:\d{2})', str(m.group(i['_id'])));
+                    if tm:
+                        dt = datetime(_ints(tm.group(1)), _ints(tm.group(2)), _ints(tm.group(3)), _ints(tm.group(4)), _ints(tm.group(5)), _ints(tm.group(6)), _ints(tm.group(7)), tz(tm.group(8)));
+            if not dt:
+                ts = str(m.group(i['_id'])).strip();
+                #logger.critical(ts);
+                if re.search(':\s', ts):
+                    ts = re.sub(':\s.*', '', ts);
+                try:
+                    if not re.search('20\d{2} ', ts):
+                        if 'timestamp' in entry:
+                             dt_anchor = datetime.fromtimestamp(int(str(entry['timestamp'])[:-3]));
+                             ts = str(dt_anchor.year) + ' ' + ts;
+                    dt = parser.parse(ts, None, tzinfos=tzinfos, fuzzy=True);
+                except:
+                    exc_type, exc_value, exc_traceback = sys.exc_info();
+                    return 'failed ' + args.index_prefix + '/' + str(entry_type) + ' to parse timestamp: \'' + str(m.group(i['_id'])) + '\' [' + ts + '] due to ' + str(exc_type) + ' ' + str(exc_value), s;
+                    #logger.error(traceback.print_exception(exc_type, exc_value, exc_traceback));
+                    continue;
+            if not dt:
+                return 'failed to parse timestamp: \'' + str(m.group(i['_id'])) + '\'', s;
+            delta = None;
+            try:
+                delta = dt - epoch;
+            except:
+                exc_type, exc_value, exc_traceback = sys.exc_info();
+                if re.search('subtract offset-naive', str(exc_value)):
+                    dt = dt.replace(tzinfo=tz('-04:00'));
+                    delta = dt - epoch;
+                else:
+                    return 'failed ' + args.index_prefix + '/' + str(entry_type) + ' to parse timestamp: \'' + str(m.group(i['_id'])) + '\' [' + ts + '] due to ' + str(exc_type) + ' ' + str(exc_value), s;
+            entry[i['_name']] = str(delta.days * 86400 + delta.seconds) + str(delta.microseconds).zfill(6)[:3];
+            if not entry_index:
+                if args.index_suffix in ['YYYYMMDD']:
+                    if '_index' in _schema:
+                        entry_index = _schema['_index'];
+                    else:
+                        entry_index = args.index_prefix;
+                    entry_index += str(dt.date()).replace('-', '');
+            #entry[i] = str(dt)[:-9] + str(dt)[-6:];
+            #entry_index = 'brocade-' + str("{:%Y%m%d}").format(dt.date());
+        else:
+            entry[i['_name']] = m.group(i['_id']);
+
+    if '_derivatives' in _schema:
+        for d in _schema['_derivatives']:
+            field_name = d['_name'];
+            field_value = None;
+            funct_name = str(d['_function'][0]);
+            funct_scope = sys.modules[__name__];
+            funct_vars = list(d['_function'][1:]);
+            kwargs = {};
+            for i in funct_vars:
+                key = i.split(':')[0];
+                value = None;
+                if len(i.split(':')) > 1:
+                    value = i.split(':')[1];
+                if value:
+                    if value in entry:
+                        value = entry[value];
+                else:
+                    value = entry[key];
+                kwargs[key] = value;
+            try:
+                funct = getattr(funct_scope, funct_name);
+                field_value = funct(**kwargs);
+            except:
+                exc_type, exc_value, exc_traceback = sys.exc_info();
+                exc_error = str(exc_type) + ' when calling \'' + funct_name + '\' function: ' + str(exc_value);
+                return 'failed with ' + exc_error, s;
+                #logger.error(traceback.print_exception(exc_type, exc_value, exc_traceback));
+            if field_value:
+                entry[field_name] = field_value;
+    header = {
+        entry_action: {
+            '_index': entry_index,
+            '_type':  entry_type,
+            '_id': entry_id,
+            '_types': entry_map,
+        },
+    };
+    return header, entry;
+
+def _dict_pointer(dd, path):
+    return functools.reduce(lambda dd, k: dd.setdefault(k, {}), path, dd);
+
+def _update_dict(d, path, value):
+    try:
+        _dict_pointer(d, path[:-1])[path[-1]] = value;
+    except:
+        ''' this exception handles overlapping network ranges '''
+        if isinstance(_dict_pointer(d, path[:-1]), str):
+            parent_elements = path[:-2];
+            parent_element = path[-2]
+            child_element = path[-1];
+            name = _dict_pointer(d, path[:-1]);
+            _dict_pointer(d, parent_elements)[parent_element] = { 'name': name, child_element: {}};
+
+def _load_clients(ds):
+    dd = {};
+    for c in ds:
+        name = c['name'];
+        networks = c['networks'];
+        netpath = [];
+        for n in networks:
+            netpath = [];
+            net = _get_ipaddr(n);
+            for i in range(8, net.prefixlen):
+                parent_net = _get_ipaddr(str(net).split('/')[0] + '/' + str(i));
+                netpath.append(parent_net);
+            netpath.append(net);
+            cp = [];
+            last = len(netpath) - 1;
+            for i, p in enumerate(netpath):
+                cp.append(p);
+                try:
+                    cv = functools.reduce(dict.__getitem__, cp, dd);
+                except:
+                    v = {};
+                    if i == last:
+                        v = name;
+                    _update_dict(dd, cp, v);
+    return dd;
+
+
+def _load_json_data(opt, files):
+    for f in files:
+        try:
+            with open(f, 'rb') as fh:
+                content = json.loads(fh.read().decode("utf-8"));
+                if opt == '--index-schema':
+                    if not isinstance(content, list):
+                        logger.error('the file path pattern provided by --index-schema matched \'' + f + '\' file, but it is does not contain list of dictionaries');
+                        os._exit(1);
+                    else:
+                        for c in content:
+                            schema.append(c);
+                    if not schema:
+                        logger.error('the file path pattern provided by --index-schema matched \'' + f + '\' file, but it did not contain required schema information');
+                        os._exit(1);
+                elif opt == '--data':
+                    content = ast.literal_eval(json.dumps(content));
+                    for k in content.keys():
+                        if k == 'clients':
+                            db[k] = _load_clients(content[k]);
+                        else:
+                            db[k] = content[k];
+        except:
+            exc_type, exc_value, exc_traceback = sys.exc_info();
+            logger.error(str(exc_type) + ' when reading \'' + f + '\': ' + str(exc_value));
+            logger.error(str(traceback.print_exception(exc_type, exc_value, exc_traceback)));
+            os._exit(1);
+
+
+def _tmpfile(content):
+    ts = datetime.now().strftime("%Y%m%d.%H%M%S");
+    tf = tempfile.NamedTemporaryFile(delete=False, dir='/tmp', suffix='.' + ts + ".retry");
+    if _python2:
+        tf.write(content);
+    else:
+        tf.write(content.encode("utf-8"));
+    tf.close();
+    logger.info('the lines failing parsing are stored in ' + (tf.name));
+
+
+def _es_bulk_api_call(task_queue, results):
+    current_thread_name = str(threading.current_thread().name);
+    while True:
+        try:
+            payload = task_queue.get(True, 1);
+        except:
+            exc_type, exc_value, exc_traceback = sys.exc_info();
+            if re.search('Empty', str(exc_type)):
+                if _end_of_analysis:
+                    break;
+                else:
+                    continue;
+            results.put(ElasticSearchBulkApi(error=str(exc_type) + ': ' + str(exc_value)));
+            continue;
+        bulkapi = ElasticSearchBulkApi();
+        try:
+            if isinstance(payload, list):
+                retries = bulkapi.call(payload);
+                if retries:
+                    task_queue.put(retries);
+                    
+            else:
+                bulkapi.error = 'unsupported data type ' + str(type(payload));
+        except:
+            exc_type, exc_value, exc_traceback = sys.exc_info();
+            bulkapi.error = current_thread_name + ' ' + str(exc_type) + ': ' + str(exc_value);
+        results.put(bulkapi);
+        task_queue.task_done();
+
+
+def _analyzer(analysis_queue, task_queue, results, entries, entries_pass, entries_fail):
+    global line_count_upload;
+    current_thread_name = str(threading.current_thread().name);
+    while True:
+        try:
+            line = analysis_queue.get(True, 1);
+        except:
+            exc_type, exc_value, exc_traceback = sys.exc_info();
+            if re.search('Empty', str(exc_type)):
+                if _end_of_input:
+                    break;
+                else:
+                    continue;
+            else:
+                logger.error(str(exc_type) + ' ' + str(exc_value) + ':' + str(line));
+                return;
+        line = line.rstrip();
+        line = _remove_non_ascii(line);
+        try:
+            header, entry = _parse_line(line);
+            if not header:
+                _increment_counter('failure');
+                if args.show_failure:
+                    if entry:
+                        results.put(str(entry));
+        except:
+            exc_type, exc_value, exc_traceback = sys.exc_info();
+            if args.show_failure:
+                results.put(str(traceback.print_exception(exc_type, exc_value, exc_traceback)) + ': ' + line);
+                _increment_counter('failure');
+            continue;
+        if header:
+            if re.match('failed', str(header)):
+                _increment_counter('failure');
+                if args.show_failure:
+                    if entry:
+                        results.put(str(header) + ' ' + str(entry));
+                        if args.keep_failed:
+                            entries_fail.put(entry);
+                    else:
+                        results.put(str(header));
+            elif re.match('_skip', str(header)):
+                _increment_counter('skip');
+            elif re.match('_empty', str(header)):
+                _increment_counter('empty');
+            else:
+                entries_lock.acquire();
+                try:
+                    entries.put({'header': header, 'body': entry, 'retries': 3});
+                finally:
+                    entries_lock.release();
+                _increment_counter('success');
+                if args.show_success:
+                    entries_pass.put({'header': header, 'body': entry});
+                if args.upload:
+                    _increment_counter('upload');
+                    if line_count_upload >= args.max_upload_count:
+                        entries_lock.acquire();
+                        line_count_upload = 0;
+                        try:
+                            tasks = list();
+                            while True:
+                                try:
+                                    task = entries.get(True, 1);
+                                    tasks.append(task);
+                                except:
+                                    break;
+                            task_queue.put(tasks);
+                            tasks = None;
+                        finally:
+                            entries_lock.release();
+        analysis_queue.task_done();
+    if args.upload:
+        entries_lock.acquire();
+        try:
+            tasks = list();
+            while True:
+                try:
+                    task = entries.get(True, 1);
+                    tasks.append(task);
+                except:
+                     break;
+            if tasks:
+                task_queue.put(tasks);
+        finally:
+            entries_lock.release();
+    return;
+
+
+def _watch_results(results):
+    while True:
+        _erred = False;
+        try:
+            result = results.get();
+        except:
+            exc_type, exc_value, exc_traceback = sys.exc_info();
+            logger.error = str(exc_type) + ': ' + str(exc_value);
+            logger.error(traceback.print_exception(exc_type, exc_value, exc_traceback));
+            continue;
+        if isinstance(result, str):
+            logger.error(result);
+            results.task_done();
+            continue;
+        if hasattr(result, 'error'):
+            if isinstance(result.error, (str, dict)):
+                _erred = True;
+        if _erred:
+            if isinstance(result, str):
+                logger.error(result);
+            else:
+                logger.error(str(result.error));
+        else:
+            if hasattr(result, 'text'):
+                logger.info(str(result.text));
+        results.task_done();
+
+def _increment_counter(counter, number=None):
+    counter_lock.acquire();
+    try:
+        if number:
+            globals()['line_count_' + counter] = 0;
+        else:
+            globals()['line_count_' + counter] += 1;
+    except:
+        exc_type, exc_value, exc_traceback = sys.exc_info();
+        logger.error(traceback.print_exception(exc_type, exc_value, exc_traceback));
+    finally:
+        counter_lock.release();
+
+def _exceed_limits():
+    exceeds = False;
+    counter_lock.acquire();
+    try:
+        if args.line_limit:
+            if line_count_main >= args.line_limit:
+                exceeds = True;
+        if args.success_line_limit:
+            if line_count_success >= args.success_line_limit:
+                exceeds = True;
+        if args.failure_line_limit:
+            if line_count_failure >= args.failure_line_limit:
+                exceeds = True;
+    finally:
+        counter_lock.release();
+    return exceeds;
+
+
+def _display_counters():
+    logger.info('found ' + str(line_count_failure) + ' error(s) and ' + str(line_count_success) + ' compliant entries out of ' + str(line_count_main) + ' lines');
+    if line_count_skip > 0:
+        logger.info('skipped ' + str(line_count_skip) + ' line(s)');
+    if line_count_empty > 0:
+        logger.info('found ' + str(line_count_empty) + ' empty line(s)');
+
+
+def _display_entries(q):
+    lst = [];
+    fields = [];
+    json_payload = [];
+    while True:
+        try:
+            entry = q.get(True, 0);
+            if 'header' not in entry and 'body' not in entry:
+                continue;
+            lst.append(entry);
+            for k in entry['body'].keys():
+                if k not in fields:
+                    if args.field_filter:
+                        if not re.match(args.field_filter + '$', k):
+                            continue;
+                    fields.append(k);
+        except:
+            break;
+    if fields:
+        sep = ';';
+        header = sep.join(fields);
+        liner = re.sub('[^' + sep + ']', '-', header);
+        print(header + '\n' + liner);
+        for entry in lst:
+            output = [];
+            if not 'body' in entry:
+                continue;
+            if 'header' in entry and 'body' in entry:
+                for action in entry['header']:
+                    if '_types' in entry['header'][action]:
+                        entry_map = entry['header'][action].pop('_types', None);
+                        json_payload.append(json.dumps(entry['header']));
+                        json_payload.append(_to_json(entry['body'], entry_map));
+            body = entry['body'];
+            for f in fields:
+                if f in body:
+                    output.append(str(body[f]));
+                else:
+                    output.append('NOT_AVAILABLE');
+            print(';'.join(output));
+        if json_payload and args.show_json:
+            print('\n\n'.join(json_payload));
+
+
+def _display_failed_entries(q):
+    _display_counters();
+    if args.keep_failed:
+        lst = [];
+        while True:
+            try:
+                entry = q.get(True, 0);
+                lst.append(entry);
+            except:
+                break;
+        if lst:
+             _tmpfile('\n'.join(lst) + '\n');
+
+
+def main():
+    global _python2, epoch, schema, args, db, cache, entries_lock, counter_lock;
+    _python2 = False;
+    if sys.version_info[0] < 3:
+        _python2 = True;
+    mode = os.fstat(0).st_mode;
+    _piped_input = False;
+    _redirected_input = False;
+    _terminal_input = False;
+    if stat.S_ISFIFO(mode):
+        mode = "piped";
+        _piped_input = True;
+    elif stat.S_ISREG(mode):
+        mode = "redirected";
+        _redirected_input = True;
+    else:
+        mode = "terminal";
+        _terminal_input = True;
+
+    descr = str(os.path.basename(__file__)) + ' - Elastic Search Data Entry and Pre-Processing Utility\n\n';
+    epil = '\ngithub: https://github.com/greenpau/elastic-data-entry\n\n'
+    parser = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter, \
+                                     description=descr, epilog=epil)
+    main_group = parser.add_argument_group('general arguments')
+    main_group.add_argument('--host', dest='host', metavar='HOST', required=False, \
+                            type=str, default='localhost', help='elasticsearch IP address');
+    main_group.add_argument('--port', dest='port', metavar='PORT', required=False, \
+                            type=int, default=9200, help='elasticsearch port number');
+    main_group.add_argument('--index-schema', dest='index_schema', metavar='FILE_PATH_REGEX', required=True, \
+                            action=add_files_from_path, help='file path pattern for index mappings in JSON format');
+    main_group.add_argument('--data', dest='data', metavar='FILE_PATH_REGEX', required=False, \
+                            action=add_files_from_path, help='file path pattern for external data in JSON format');
+    main_group.add_argument('--no-proxy', dest='noproxy', action='store_true', required=False, \
+                            help='disables proxy, if any');
+    main_group.add_argument('--show-failure', dest='show_failure', action='store_true', required=False, \
+                            default=False, help='show input parsing errors only');
+    main_group.add_argument('--show-json', dest='show_json', action='store_true', required=False, \
+                            default=False, help='show JSON output for successfully parsed lines');
+    main_group.add_argument('--show-success', dest='show_success', action='store_true', required=False, \
+                            default=False, help='show successfully parsed lines');
+    main_group.add_argument('--field-filter', dest='field_filter', metavar='REGEX', required=False, \
+                            type=str, help='display field filtering with RegEx');
+    limit_group = parser.add_mutually_exclusive_group(required=False);
+    limit_group.add_argument('--line-limit', dest='line_limit', metavar='COUNT', required=False, \
+                            type=int, help='parsed line limit (default: unlimited)');
+    limit_group.add_argument('--success-line-limit', dest='success_line_limit', metavar='COUNT', required=False, \
+                            type=int, help='line limit for successfully parsed line (default: unlimited)');
+    limit_group.add_argument('--failure-line-limit', dest='failure_line_limit', metavar='COUNT', required=False, \
+                            type=int, help='line limit for the line failing parsing (default: unlimited)');
+    main_group.add_argument('--records-per-upload', dest='max_upload_count', metavar='COUNT', required=False, \
+                            type=int, default=1000, help='the number of records per single bulk API upload (default: 1000)');
+    main_group.add_argument('--threads-per-upload', dest='max_upload_threads', metavar='COUNT', required=False, \
+                            type=int, default=1, help='the number of concurrent threads performing bulk API upload (default: 1)');
+    main_group.add_argument('--parser-threads', dest='max_parser_threads', metavar='COUNT', required=False, \
+                            type=int, default=1, help='the number of concurrent threads performing line parsing (default: 1)');
+    main_group.add_argument('--upload', dest='upload', action='store_true', required=False, \
+                            help='perform elasticsearch bulk API upload');
+    main_group.add_argument('--default-index-prefix', dest='index_prefix', metavar='INDEX_PREFIX', required=False, \
+                            type=str, default='messages-', help='index prefix (default: "messages-")');
+    main_group.add_argument('--default-index-suffix', dest='index_suffix', metavar='INDEX_SUFFIX', required=False, \
+                            type=str, default='YYYYMMDD', choices=['YYYYMMDD'], \
+                            help='index suffix (default: YYYYMMDD, e.g. 20160101)');
+    main_group.add_argument('--default-timezone', dest='timezone', metavar='TZ', required=False, \
+                            type=str, default='EST', choices=['EST', 'CST', 'MST', 'PST'], \
+                            help='default timezone for offset-naive timestamps (default: EST)');
+    main_group.add_argument('--keep-failed', dest='keep_failed', action='store_true', required=False, \
+                            default=False, help='store the lines failing parsing in a temporary file');
+    main_group.add_argument('--debug', dest='debug', action='store_true', required=False, \
+                            help='enables debugging');
+    args = parser.parse_args();
+
+    if not args.index_schema:
+        logger.error('the file path pattern provided by --index-schema did not match any files');
+        exit(1);
+
+    epoch = datetime(1970, 1, 1, 0, 0, 0, 0, tz('00:00'));
+    schema = [];
+    db = OrderedDict({});
+    cache = OrderedDict({});
+
+    if args.index_schema:
+        _load_json_data('--index-schema', args.index_schema);
+        logger.debug(schema);
+
+    if args.data:
+        _load_json_data('--data', args.data);
+
+    global _end_of_input;
+    global _end_of_analysis;
+    global line_count_main;
+    global line_count_upload;
+    global line_count_success;
+    global line_count_failure;
+    global line_count_skip;
+    global line_count_empty;
+
+    for counter in ['main', 'upload', 'success', 'failure', 'skip', 'empty']:
+        globals()['line_count_' + counter] = 0; 
+
+    _end_of_input = False;
+    _end_of_analysis = False;
+
+    analysis_queue = Queue();
+    task_queue = Queue();
+    results = Queue();
+    entries = Queue();
+    entries_pass = Queue();
+    entries_fail = Queue();
+    counter_lock = Lock();
+    entries_lock = Lock();
+
+    uploader_threads = [];
+    if args.upload:
+        for i in range(args.max_upload_threads):
+            uploader = Thread(target=_es_bulk_api_call, args=(task_queue, results));
+            uploader.name = 'UploaderThread' + str(i).zfill(4);
+            uploader.daemon = True; # the thread exits when its main program exits
+            uploader.start();
+            uploader_threads.append(uploader);
+
+    worker_threads = [];
+    for i in range(args.max_parser_threads):
+        worker = Thread(target=_analyzer, args=(analysis_queue, task_queue, results, entries, entries_pass, entries_fail));
+        worker.name = 'AnalyzerThread' + str(i).zfill(4);
+        worker.daemon = True;
+        worker.start();
+        worker_threads.append(worker);
+
+    controller = Thread(target=_watch_results, args=(results,));
+    controller.name = 'ControllerThread';
+    controller.daemon = True;
+    controller.start();
+
+    if _piped_input or _redirected_input:
+        if not sys.stdin.isatty():
+            try:
+                for line in sys.stdin:
+                    if _exceed_limits():
+                        break;
+                    line_count_main += 1;
+                    analysis_queue.put(line);
+            except:
+                pass;
+        _end_of_input = True;
+    else:
+        logger.error('no input detected');
+        exit(1);
+
+    for worker in worker_threads:
+        worker.join();
+    analysis_queue.join();
+    _end_of_analysis = True;
+
+    if args.upload or args.show_failure:
+        task_queue.join();
+        results.join();
+
+    if args.show_success:
+        _display_entries(entries_pass);
+
+    if args.show_failure:
+        _display_failed_entries(entries_fail);
+
+    exit(0);
+
+if __name__ == '__main__':
+    main();

@@ -1,0 +1,25 @@
+[
+    {
+        "regex": ".*last message repeated \\d+ time",
+        "_skip": true
+    },
+    {
+        "action": "index",
+        "regex": "(\\S+)\\s+(\\S+)\\s+(:|\\d+:|\\d+:\\s+\\d+:)\\s+(20\\d{2}.*|[A-Z][a-z]{2}.*) [%](\\S+)-([0-7])-(\\S+)\\s*:\\s+([\\[\\S].*)",
+        "_index": "syslog-",
+        "_type": "cisco_nxos",
+        "_mappings": [
+            { "_name": "timestamp",         "_id": 1,  "_type": "date", "_format": "basic_date_time" },
+            { "_name": "hostname",          "_id": 2,  "_type": "string" },
+            { "_name": "_skip",             "_id": 3 },
+            { "_name": "host_timestamp",    "_id": 4,  "_type": "date" },
+            { "_name": "facility",          "_id": 5,  "_type": "string" },
+            { "_name": "severity",          "_id": 6,  "_type": "integer" },
+            { "_name": "class",             "_id": 7,  "_type": "string" },
+            { "_name": "message",           "_id": 8,  "_type": "string" }
+        ],
+        "_derivatives": [
+            { "_name": "shortname", "_function": ["_get_shortname", "hostname"] }
+        ]
+    }
+]

@@ -1,0 +1,22 @@
+{
+  "applications": [
+    {
+        "name": "Microsoft Exchange OWA",
+        "endpoints": [
+            { "ipv4": ["10.1.1.1"], "ports": ["0-65535"] }
+        ]
+    },
+    {
+        "name": "Intranet Website",
+        "endpoints": [
+            { "ipv4": "10.1.1.2", "ports": ["0-65535"] }
+        ]
+    },
+    {
+        "name": "Online Password Reset",
+        "endpoints": [
+            { "ipv4": ["10.1.1.3"] }
+        ]
+    }
+  ]
+}

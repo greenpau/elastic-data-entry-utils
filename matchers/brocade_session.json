@@ -1,0 +1,24 @@
+[
+    {
+        "action": "index",
+        "regex": "(\\S+)\\s+(\\S+)\\s+src-ip = (\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}) src-port = (\\d+) dst-ip = (\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}) dst-port = (\\d+) protocol = (\\S+) time = (\\d+)",
+        "_index": "brocade-",
+        "_type": "session",
+        "_mappings": [
+            { "_name": "timestamp",          "_id": 1,  "_type": "date",      "_format": "basic_date_time"},
+            { "_name": "hostname",           "_id": 2,  "_type": "string"},
+            { "_name": "src_ip",             "_id": 3,  "_type": "ip"},
+            { "_name": "src_port",           "_id": 4,  "_type": "integer"},
+            { "_name": "dst_ip",             "_id": 5,  "_type": "ip"},
+            { "_name": "dst_port",           "_id": 6,  "_type": "integer"},
+            { "_name": "proto",              "_id": 7,  "_type": "string"},
+            { "_name": "tcp_handshake_time", "_id": 8,  "_type": "double",     "_format": "nanoseconds"}
+        ],
+        "_derivatives": [
+            { "_name": "application", "_function": ["_value_lookup", "db:applications", "ipv4:dst_ip", "protocol:proto", "port:dst_port"] },
+            { "_name": "shortname", "_function": ["_get_shortname", "hostname"] },
+            { "_name": "src_org",  "_function": ["_value_lookup", "db:clients", "ipv4:src_ip"] }
+        ]
+    }
+]
+
