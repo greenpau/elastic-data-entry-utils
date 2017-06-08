@@ -1,0 +1,60 @@
+[
+    {
+        "action": "update",
+        "_index": "logstash-*",
+        "_type": "logs",
+        "_regex": "^<(\\d+)>([A-z]{3}\\s+\\d{1,2}\\s\\d{1,2}:\\d{1,2}:\\d{1,2})\\s+(\\w+)\\s+(docker):\\stime=\"([T0-9-:.]+)\"\\slevel=(debug|info)\\smsg=\"(.*)\"\\sdiscovery=(\\w+)$",
+        "_mappings": [
+            {
+                "_name": "local_event_id",
+                "_id": 1,
+                "_type": "integer"
+            },
+            {
+                "_name": "_skip",
+                "_id": 2
+            },
+            {
+                "_name": "local_hostname",
+                "_id": 3,
+                "_type": "string"
+            },
+            {
+                "_name": "local_service_name",
+                "_id": 4,
+                "_type": "string"
+            },
+            {
+                "_name": "local_timestamp",
+                "_id": 5,
+                "_type": "date"
+            },
+            {
+                "_name": "log_severity",
+                "_id": 6,
+                "_type": "string",
+                "_transforms": [
+                    {
+                        "_function": ["_normalize_log_severity"]
+                    }
+                ]
+            },
+            {
+                "_name": "log_message",
+                "_id": 7,
+                "_type": "string"
+            },
+            {
+                "_name": "local_discovery_method",
+                "_id": 8,
+                "_type": "string"
+            }
+        ],
+        "_derivatives": [
+            {
+                "_name": "fqdn",
+                "_function": ["_resolve_dns", "_source.host"]
+            }
+        ]
+    }
+]

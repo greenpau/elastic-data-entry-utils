@@ -10,34 +10,38 @@ the supplied schema file adequately cover all entries in the
 supplied log file.
 
 ```
-cat logs/brocade_session.log | ./esde --index-prefix="brocade-" --index-schema=matchers/brocade_session.json
+cat logs/brocade_session.log | ./esde --default-index-prefix="brocade-" --index-schema=matchers/brocade_session.json
 ```
 
 The script could make use of non-log data using `--data` option.
 Here, the script will look for `.json` files in `data` directory.
 
 ```
-cat logs/brocade_session.log | ./esde --index-prefix="brocade-" --index-schema=matchers/brocade_session.json --data "data/*.json" --show-failure
+cat logs/brocade_session.log | ./esde --default-index-prefix="brocade-" --index-schema=matchers/brocade_session.json --data "data/*.json" --show-failure
 ```
 
 Additionally, a user may use `--failure-line-limit` argument. When used, it causes the script to exit
 once the number of lines not matching any pattern exceeds a certain threshold.
 
 ```
-zcat /var/logs/cisco*.gz | ./esde --index-prefix="syslog-" --index-schema=matchers/cisco_syslog.json --show-failure --failure-line-limit 1000
+zcat /var/logs/cisco*.gz | ./esde --default-index-prefix="syslog-" --index-schema=matchers/cisco_syslog.json --show-failure --failure-line-limit 1000
 ```
-
 
 A user may specify multiple data paths, e.g. `--data "data1/*.json" --data "data2/*.json"`.
 
 The above command uses `--show-failure` option. When used, the data will not be loaded to elasticsearch.
 
 ```
-cat logs/brocade_session.log | ./esde --index-prefix="brocade-" --index-schema=matchers/brocade_session.json --data "data/*.json" --upload
+cat logs/brocade_session.log | ./esde --default-index-prefix="brocade-" --index-schema=matchers/brocade_session.json --data "data/*.json" --upload
 ```
 
 Unlike the `--show-failure` option, the `--upload` option causes the script to load data to elasticsearch via its Bulk API calls.
 
+The following command show messages that were successfully parsed:
+
+```
+cat logs/cisco_syslog.log | ./esde --default-index-prefix="network-" --index-schema=matchers/cisco_syslog.json --show-success
+```
 
 Kibana image: `:5601/bundles/src/ui/public/images/kibana.svg`
 
@@ -55,5 +59,5 @@ docker exec -it elastic-data-entry /bin/sh
 Then, the logs previously mapped with `--volume` are available:
 
 ```
-zcat /tmp/log/messages.0.gz | esde --index-prefix="syslog-" --index-schema=matchers/*.json --data=/tmp/data/*.json --upload --line-limit 2000
+zcat /tmp/log/messages.0.gz | esde --default-index-prefix="syslog-" --index-schema=matchers/*.json --data=/tmp/data/*.json --upload --line-limit 2000
 ```

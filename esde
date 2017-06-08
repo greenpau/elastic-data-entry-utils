@@ -38,6 +38,7 @@ import ast;
 import traceback;
 import tempfile;
 import threading;
+import yaml;
 from threading import Thread, Lock;
 try:
     from Queue import Queue;
@@ -58,6 +59,9 @@ except:
     logger.error('\'python-dateutil\' module must be present, exiting ...');
     os._exit(1);
 
+import requests;
+import copy;
+
 logging.basicConfig(format='%(asctime)s - %(module)s - %(threadName)s - %(funcName)s - %(levelname)s - %(message)s');
 logger = logging.getLogger(__file__);
 logger.setLevel(logging.INFO);
@@ -73,11 +77,60 @@ class add_files_from_path(argparse.Action):
                     namespace.index_schema = [];
                 if f not in namespace.index_schema:
                     namespace.index_schema.append(os.path.abspath(f));
-            if option_string in ['--data']:
+            elif option_string in ['--update-schema']:
+                if namespace.update_schema is None:
+                    namespace.update_schema = [];
+                if f not in namespace.update_schema:
+                    namespace.update_schema.append(os.path.abspath(f));
+            elif option_string in ['--data']:
                 if namespace.data is None:
                     namespace.data = [];
                 if f not in namespace.data:
                     namespace.data.append(os.path.abspath(f));
+            else:
+                pass;
+
+
+class ElasticSearchApi:
+
+    def __init__(self):
+        self.errors = [];
+
+    def Query(self):
+        db = None;
+        url = 'http://' + args.host + ':' + str(args.port);
+        url += "/" + args.index_prefix + "/" + args.index_type_field + "/_search?pretty=true";
+        q = {
+            "query": {
+                "term": {
+                    "host.keyword" : "10.60.121.93"
+                }
+            }
+        };
+        headers = {
+            "Accept-Charset": "utf-8",
+            "Accept-Encoding": "gzip, deflate, compress",
+            "Accept": "*/*",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/50.0.2661.102 Safari/537.36",
+        };
+        try:
+            r = requests.post(url, data=json.dumps(q), headers=headers);
+            if r.status_code == 200:
+                db = copy.deepcopy(r.json());
+                if 'hits' in db:
+                    if 'hits' in db['hits']:
+                        return list(db['hits']['hits']);
+        except:
+            exc_type, exc_value, exc_traceback = sys.exc_info();
+            self.errors.append(exc_type.__name__ + ': ' + str(exc_value));
+        return db;
+
+    def print_errors(self):
+        for i in self.errors:
+            for j in i.split('\n'):
+                logger.error(j);
+        return;
+
 
 class ElasticSearchBulkApi:
 
@@ -444,13 +497,25 @@ def _parse_line(s):
     _schema = None;
     m = None;
     for r in schema:
-        m = re.match(r['regex'], s);
-        if m:
-            if '_skip' in r:
-                if r['_skip'] == True:
-                    return '_skip', None;
-            _schema = r;
-            _match = True;
+        if 'regex' not in r:
+            continue;
+        rgx_list = None;
+        if isinstance(r['regex'], list):
+            rgx_list = r['regex'];
+        elif isinstance(r['regex'], str):
+            rgx_list = [r['regex']];
+        else:
+            continue;
+        for rgx in rgx_list:
+            m = re.match(rgx, s);
+            if m:
+                if '_skip' in r:
+                    if r['_skip'] == True:
+                        return '_skip', None;
+                _schema = r;
+                _match = True;
+                break;
+        if _match:
             break;
     if not _match:
         return 'failed, no match found', s;
@@ -465,6 +530,12 @@ def _parse_line(s):
     entry = OrderedDict({'text': s });
     entry_map = OrderedDict({});
     for i in _schema['_mappings']:
+        _is_continue = False;
+        for f in ['_name', '_type']:
+            if f not in i:
+                _is_continue = True;
+        if _is_continue:
+            continue;
         if i['_name'] == '_skip':
             continue;
         entry_map[i['_name']] = i['_type'];
@@ -557,7 +628,8 @@ def _parse_line(s):
                     if value in entry:
                         value = entry[value];
                 else:
-                    value = entry[key];
+                    if key in entry:
+                        value = entry[key];
                 kwargs[key] = value;
             try:
                 funct = getattr(funct_scope, funct_name);
@@ -621,28 +693,40 @@ def _load_clients(ds):
     return dd;
 
 
-def _load_json_data(opt, files):
+def _load_structured_data(opt, files):
     for f in files:
         try:
-            with open(f, 'rb') as fh:
-                content = json.loads(fh.read().decode("utf-8"));
-                if opt == '--index-schema':
-                    if not isinstance(content, list):
-                        logger.error('the file path pattern provided by --index-schema matched \'' + f + '\' file, but it is does not contain list of dictionaries');
-                        os._exit(1);
-                    else:
-                        for c in content:
-                            schema.append(c);
-                    if not schema:
-                        logger.error('the file path pattern provided by --index-schema matched \'' + f + '\' file, but it did not contain required schema information');
-                        os._exit(1);
-                elif opt == '--data':
+            content = None;
+            if re.search('\.json$', f):
+                with open(f, 'rb') as fh:
+                    content = json.loads(fh.read().decode("utf-8"));
+                if opt == '--data':
                     content = ast.literal_eval(json.dumps(content));
-                    for k in content.keys():
-                        if k == 'clients':
-                            db[k] = _load_clients(content[k]);
-                        else:
-                            db[k] = content[k];
+            elif re.search('\.yaml$', f):
+                with open(f) as fn:
+                    fc = yaml.load(fn);
+                    if 'matchers' in fc:
+                        content = fc['matchers'];
+            else:
+                pass;
+            if opt in ['--index-schema', '--update-schema']:
+                if not isinstance(content, list):
+                    logger.error('the file path pattern provided by ' + opt + ' matched \'' + f + '\' file, but it is does not contain list of dictionaries');
+                    os._exit(1);
+                else:
+                    for c in content:
+                        schema.append(c);
+                if not schema:
+                    logger.error('the file path pattern provided by ' + opt + ' matched \'' + f + '\' file, but it did not contain required schema information');
+                    os._exit(1);
+            elif opt == '--data':
+                for k in content.keys():
+                    if k == 'clients':
+                        db[k] = _load_clients(content[k]);
+                    else:
+                        db[k] = content[k];
+            else:
+                pass;
         except:
             exc_type, exc_value, exc_traceback = sys.exc_info();
             logger.error(str(exc_type) + ' when reading \'' + f + '\': ' + str(exc_value));
@@ -695,73 +779,83 @@ def _analyzer(analysis_queue, task_queue, results, entries, entries_pass, entrie
     global line_count_upload;
     current_thread_name = str(threading.current_thread().name);
     while True:
+        queue_item = None;
         try:
-            line = analysis_queue.get(True, 1);
+            queue_item = analysis_queue.get(True, 1);
         except:
             exc_type, exc_value, exc_traceback = sys.exc_info();
             if re.search('Empty', str(exc_type)):
                 if _end_of_input:
+                    #analysis_queue.task_done();
                     break;
-                else:
-                    continue;
+                analysis_queue.task_done();
+                continue;
             else:
-                logger.error(str(exc_type) + ' ' + str(exc_value) + ':' + str(line));
+                logger.error(str(exc_type) + ' ' + str(exc_value) + ':' + str(queue_item));
+                analysis_queue.task_done();
                 return;
-        line = line.rstrip();
-        line = _remove_non_ascii(line);
-        try:
-            header, entry = _parse_line(line);
-            if not header:
-                _increment_counter('failure');
+        line = '';
+        if isinstance(queue_item, dict):
+            line = queue_item['message'];
+        elif isinstance(queue_item, str):
+            line = queue_item;
+            line = line.rstrip();
+            line = _remove_non_ascii(line);
+            try:
+                header, entry = _parse_line(line);
+                if not header:
+                    _increment_counter('failure');
+                    if args.show_failure:
+                        if entry:
+                            results.put(str(entry));
+            except:
+                exc_type, exc_value, exc_traceback = sys.exc_info();
                 if args.show_failure:
-                    if entry:
-                        results.put(str(entry));
-        except:
-            exc_type, exc_value, exc_traceback = sys.exc_info();
-            if args.show_failure:
-                results.put(str(traceback.print_exception(exc_type, exc_value, exc_traceback)) + ': ' + line);
-                _increment_counter('failure');
-            continue;
-        if header:
-            if re.match('failed', str(header)):
-                _increment_counter('failure');
-                if args.show_failure:
-                    if entry:
-                        results.put(str(header) + ' ' + str(entry));
-                        if args.keep_failed:
-                            entries_fail.put(entry);
-                    else:
-                        results.put(str(header));
-            elif re.match('_skip', str(header)):
-                _increment_counter('skip');
-            elif re.match('_empty', str(header)):
-                _increment_counter('empty');
-            else:
-                entries_lock.acquire();
-                try:
-                    entries.put({'header': header, 'body': entry, 'retries': 3});
-                finally:
-                    entries_lock.release();
-                _increment_counter('success');
-                if args.show_success:
-                    entries_pass.put({'header': header, 'body': entry});
-                if args.upload:
-                    _increment_counter('upload');
-                    if line_count_upload >= args.max_upload_count:
-                        entries_lock.acquire();
-                        line_count_upload = 0;
-                        try:
-                            tasks = list();
-                            while True:
-                                try:
-                                    task = entries.get(True, 1);
-                                    tasks.append(task);
-                                except:
-                                    break;
-                            task_queue.put(tasks);
-                            tasks = None;
-                        finally:
-                            entries_lock.release();
+                    results.put(str(traceback.print_exception(exc_type, exc_value, exc_traceback)) + ': ' + line);
+                    _increment_counter('failure');
+                continue;
+            if header:
+                if re.match('failed', str(header)):
+                    _increment_counter('failure');
+                    if args.show_failure:
+                        if entry:
+                            results.put(str(header) + ' ' + str(entry));
+                            if args.keep_failed:
+                                entries_fail.put(entry);
+                        else:
+                            results.put(str(header));
+                elif re.match('_skip', str(header)):
+                    _increment_counter('skip');
+                elif re.match('_empty', str(header)):
+                    _increment_counter('empty');
+                else:
+                    entries_lock.acquire();
+                    try:
+                        entries.put({'header': header, 'body': entry, 'retries': 3});
+                    finally:
+                        entries_lock.release();
+                    _increment_counter('success');
+                    if args.show_success:
+                        entries_pass.put({'header': header, 'body': entry});
+                    if args.upload:
+                        _increment_counter('upload');
+                        if line_count_upload >= args.max_upload_count:
+                            entries_lock.acquire();
+                            line_count_upload = 0;
+                            try:
+                                tasks = list();
+                                while True:
+                                    try:
+                                        task = entries.get(True, 1);
+                                        tasks.append(task);
+                                    except:
+                                        break;
+                                task_queue.put(tasks);
+                                tasks = None;
+                            finally:
+                                entries_lock.release();
+        else:
+            pass;
         analysis_queue.task_done();
     if args.upload:
         entries_lock.acquire();
@@ -905,23 +999,10 @@ def _display_failed_entries(q):
 
 
 def main():
-    global _python2, epoch, schema, args, db, cache, entries_lock, counter_lock;
+    global _python2, epoch, schema, args, db, cache, entries_lock, counter_lock, logger;
     _python2 = False;
     if sys.version_info[0] < 3:
         _python2 = True;
-    mode = os.fstat(0).st_mode;
-    _piped_input = False;
-    _redirected_input = False;
-    _terminal_input = False;
-    if stat.S_ISFIFO(mode):
-        mode = "piped";
-        _piped_input = True;
-    elif stat.S_ISREG(mode):
-        mode = "redirected";
-        _redirected_input = True;
-    else:
-        mode = "terminal";
-        _terminal_input = True;
 
     descr = str(os.path.basename(__file__)) + ' - Elastic Search Data Entry and Pre-Processing Utility\n\n';
     epil = '\ngithub: https://github.com/greenpau/elastic-data-entry\n\n'
@@ -932,12 +1013,30 @@ def main():
                             type=str, default='localhost', help='elasticsearch IP address');
     main_group.add_argument('--port', dest='port', metavar='PORT', required=False, \
                             type=int, default=9200, help='elasticsearch port number');
-    main_group.add_argument('--index-schema', dest='index_schema', metavar='FILE_PATH_REGEX', required=True, \
-                            action=add_files_from_path, help='file path pattern for index mappings in JSON format');
-    main_group.add_argument('--data', dest='data', metavar='FILE_PATH_REGEX', required=False, \
-                            action=add_files_from_path, help='file path pattern for external data in JSON format');
     main_group.add_argument('--no-proxy', dest='noproxy', action='store_true', required=False, \
                             help='disables proxy, if any');
+
+    '''
+    --index-schema is used when inserting records into an index
+    --update-schema is used when updating records in an index
+    '''
+    action_group = parser.add_argument_group('index arguments');
+    action_group_schema = action_group.add_mutually_exclusive_group(required=True);
+    action_group_schema.add_argument('--index-schema', dest='index_schema', metavar='FILE_PATH_REGEX', \
+                            action=add_files_from_path, help='file path pattern for indexing mappings in JSON format');
+    action_group_schema.add_argument('--update-schema', dest='update_schema', metavar='FILE_PATH_REGEX', \
+                            action=add_files_from_path, help='file path pattern for index update mappings in JSON format');
+    action_group.add_argument('--default-index-prefix', dest='index_prefix', metavar='INDEX_PREFIX', required=False, \
+                            type=str, default='messages-', help='index prefix (default: "messages-")');
+    action_group.add_argument('--default-index-suffix', dest='index_suffix', metavar='INDEX_SUFFIX', required=False, \
+                            type=str, default='YYYYMMDD', choices=['YYYYMMDD'], \
+                            help='index suffix (default: YYYYMMDD, e.g. 20160101)');
+    action_group.add_argument('--default-index-type-field', dest='index_type_field', metavar='INDEX_TYPE_FIELD', required=False, \
+                            type=str, default='logs', help='index _type field (default: "logs")');
+
+
+    main_group.add_argument('--data', dest='data', metavar='FILE_PATH_REGEX', required=False, \
+                            action=add_files_from_path, help='file path pattern for external data in JSON format');
     main_group.add_argument('--show-failure', dest='show_failure', action='store_true', required=False, \
                             default=False, help='show input parsing errors only');
     main_group.add_argument('--show-json', dest='show_json', action='store_true', required=False, \
@@ -961,11 +1060,6 @@ def main():
                             type=int, default=1, help='the number of concurrent threads performing line parsing (default: 1)');
     main_group.add_argument('--upload', dest='upload', action='store_true', required=False, \
                             help='perform elasticsearch bulk API upload');
-    main_group.add_argument('--default-index-prefix', dest='index_prefix', metavar='INDEX_PREFIX', required=False, \
-                            type=str, default='messages-', help='index prefix (default: "messages-")');
-    main_group.add_argument('--default-index-suffix', dest='index_suffix', metavar='INDEX_SUFFIX', required=False, \
-                            type=str, default='YYYYMMDD', choices=['YYYYMMDD'], \
-                            help='index suffix (default: YYYYMMDD, e.g. 20160101)');
     main_group.add_argument('--default-timezone', dest='timezone', metavar='TZ', required=False, \
                             type=str, default='EST', choices=['EST', 'CST', 'MST', 'PST'], \
                             help='default timezone for offset-naive timestamps (default: EST)');
@@ -975,8 +1069,26 @@ def main():
                             help='enables debugging');
     args = parser.parse_args();
 
-    if not args.index_schema:
-        logger.error('the file path pattern provided by --index-schema did not match any files');
+    if args.debug:
+        logger.setLevel(logging.DEBUG);
+
+    mode = os.fstat(0).st_mode;
+    _piped_input = False;
+    _redirected_input = False;
+    _terminal_input = False;
+    if stat.S_ISFIFO(mode):
+        mode = "piped";
+        _piped_input = True;
+    elif stat.S_ISREG(mode):
+        mode = "redirected";
+        _redirected_input = True;
+    else:
+        mode = "terminal";
+        _terminal_input = True;
+    logger.debug('input: ' + mode);
+
+    if not args.index_schema and not args.update_schema:
+        logger.error('the file path pattern provided by --index-schema or --update-schema did not match any files');
         exit(1);
 
     epoch = datetime(1970, 1, 1, 0, 0, 0, 0, tz('00:00'));
@@ -985,11 +1097,23 @@ def main():
     cache = OrderedDict({});
 
     if args.index_schema:
-        _load_json_data('--index-schema', args.index_schema);
+        for i in args.index_schema:
+            if not re.search('.(json|yaml)$', str(i)):
+                logger.error('--index-schema only support JSON and YAML files, received ' + str(i));
+                exit(1);
+        _load_structured_data('--index-schema', args.index_schema);
         logger.debug(schema);
 
+    if args.update_schema:
+        _load_structured_data('--update-schema', args.update_schema);
+        logger.debug('\n' + pprint.pformat(schema));
+        if args.debug:
+            for p in schema:
+                if '_regex' in p:
+                    logger.debug('_regex: ' + p['_regex']);
+
     if args.data:
-        _load_json_data('--data', args.data);
+        _load_structured_data('--data', args.data);
 
     global _end_of_input;
     global _end_of_analysis;
@@ -1038,6 +1162,7 @@ def main():
     controller.start();
 
     if _piped_input or _redirected_input:
+        logger.debug('piped or redirected input');
         if not sys.stdin.isatty():
             try:
                 for line in sys.stdin:
@@ -1048,25 +1173,56 @@ def main():
             except:
                 pass;
         _end_of_input = True;
+        logger.debug('End of input: ' + str(_end_of_input));
     else:
-        logger.error('no input detected');
-        exit(1);
-
+        esapi = ElasticSearchApi();
+        entries = esapi.Query();
+        if esapi.errors:
+            esapi.print_errors();
+        else:
+            for e in entries:
+                _is_valid_entry = True;
+                entry = {};
+                for f in ['_id', '_index']:
+                    if f not in e:
+                        _is_valid_entry = False;
+                        break;
+                    entry[f] = e[f];
+                if '_source' not in e:
+                    continue;
+                for f in ['host', 'message']:
+                    if f not in e['_source']:
+                        _is_valid_entry = False;
+                        break;
+                    entry[f] = e['_source'][f];
+                if _is_valid_entry:
+                    analysis_queue.put(entry);
+                
+        _end_of_input = True;
+    logger.debug('joining worker threads');
     for worker in worker_threads:
         worker.join();
-    analysis_queue.join();
+    logger.debug('joined worker threads');
+    logger.debug('joining analysis threads');
+    if not analysis_queue.empty():
+        analysis_queue.join();
+    logger.debug('joined analysis threads');
     _end_of_analysis = True;
-
     if args.upload or args.show_failure:
-        task_queue.join();
-        results.join();
+        if not task_queue.empty():
+            logger.debug('joining tasks');
+            task_queue.join();
+            logger.debug('joined tasks');
+        if not results.empty():
+            logger.debug('joining results');
+            results.join();
+            logger.debug('joined results');
 
     if args.show_success:
         _display_entries(entries_pass);
 
     if args.show_failure:
         _display_failed_entries(entries_fail);
-
     exit(0);
 
 if __name__ == '__main__':

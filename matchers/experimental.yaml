@@ -1,0 +1,98 @@
+---
+matchers:
+- regex: '.* \d+: queue full'
+  _skip: True
+- regex: '.* last message repeated \d+ times*'
+  _skip: True
+- action: 'index'
+  regex:
+  - '(\S+\s{1,3}\d\s\d{2}:\d{2}:\d{2})\s(\S+)\s(\d+):\s+(\S+\s{1,3}\d\s\d{2}:\d{2}:\d{2}\.\d{3} \S{3}): [%](\S+)-([0-7])-(\S+)\s*:\s+(\S+.*)'
+  - '(\S+\s{1,3}\d\s\d{2}:\d{2}:\d{2})\s(\S+)\s\d+:\s(\d+):\s+(\S+\s{1,3}\d\s\d{2}:\d{2}:\d{2}\.\d{3} \S{3}): [%](\S+)-([0-7])-(\S+)\s*:\s+(\S+.*)'
+  _index: 'network-'
+  _type: 'syslog'
+  _mappings:
+  - _name: 'timestamp'
+    _id: 1
+    _type: 'date'
+    _format: 'basic_date_time'
+  - _name: 'hostname'
+    _id: 2
+    _type: 'string'
+  - _name: 'seqno'
+    _id: 3
+    _type: 'integer'
+  - _name: 'host_timestamp'
+    _id: 4
+    _type: 'date'
+  - _name: 'facility'
+    _id: 5
+    _type: 'string'
+  - _name: 'severity'
+    _id: 6
+    _type: 'integer'
+  - _name: 'class'
+    _id: 7
+    _type: 'string'
+  - _name: 'message'
+    _id: 8
+    _type: 'string'
+  _derivatives:
+  - _name: 'short_name'
+    _function: ['_get_shortname', 'hostname']
+- action: 'index'
+  regex:
+  - '(\S+\s{1,3}\d\s\d{2}:\d{2}:\d{2})\s\[(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\])\s*:\s*(\d{4}\s+\S+\s{1,3}\d\s\d{2}:\d{2}:\d{2} \S{3}): [%](\S+)-([0-7])-(\S+)\s*:\s+(\S+.*)'
+  - '(\S+\s{1,3}\d\s\d{2}:\d{2}:\d{2})\s(\S+)\s:\s(\d{4}\s+\S+\s{1,3}\d\s\d{2}:\d{2}:\d{2} \S{3}): [%](\S+)-([0-7])-(\S+)\s*:\s+(\S+.*)'
+  _index: 'network-'
+  _type: 'syslog'
+  _mappings:
+  - _name: 'timestamp'
+    _id: 1
+    _type: 'date'
+    _format: 'basic_date_time'
+  - _name: 'hostname'
+    _id: 2
+    _type: 'string'
+  - _name: 'host_timestamp'
+    _id: 3
+    _type: 'date'
+  - _name: 'facility'
+    _id: 4
+    _type: 'string'
+  - _name: 'severity'
+    _id: 5
+    _type: 'integer'
+  - _name: 'class'
+    _id: 6
+    _type: 'string'
+  - _name: 'message'
+    _id: 7
+    _type: 'string'
+  _derivatives:
+  - _name: 'short_name'
+    _function: ['_get_shortname', 'hostname']
+- action: 'index'
+  regex:
+  - '(\S+\s{1,3}\d\s\d{2}:\d{2}:\d{2})\s(\S+)\s\S+: NetScreen device_id=(\S+)\s+\[\S+\](\S+)-(\S+)-\d+:\s(.*)'
+  _index: 'network-'
+  _type: 'syslog'
+  _mappings:
+  - _name: 'timestamp'
+    _id: 1
+    _type: 'date'
+    _format: 'basic_date_time'
+  - _name: 'hostname'
+    _id: 2
+    _type: 'string'
+  - _name: 'device_id'
+    _id: 3
+    _type: 'string'
+  - _name: 'facility'
+    _id: 4
+    _type: 'string'
+  - _name: 'class'
+    _id: 5
+    _type: 'string'
+  - _name: 'message'
+    _id: 6
+    _type: 'string'
